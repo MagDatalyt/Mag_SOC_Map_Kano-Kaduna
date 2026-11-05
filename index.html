@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOC Map - Kano & Kaduna</title>
+    
+    <!-- Load Leaflet (Map Library) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Load PapaParse (CSV Reader) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; height: 100vh; }
+        
+        /* Side Panel Style */
+        #sidebar {
+            width: 320px; background: #f8f9fa; padding: 20px; border-right: 2px solid #ddd;
+            overflow-y: auto; box-shadow: 2px 0 5px rgba(0,0,0,0.1); z-index: 1000;
+        }
+        h2 { margin-top: 0; color: #2c3e50; font-size: 20px; }
+        .filter-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; color: #34495e; }
+        select, input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        
+        /* Legend Style */
+        .legend { margin-top: 25px; background: white; padding: 15px; border-radius: 6px; border: 1px solid #ddd; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 8px; font-size: 14px; }
+        .color-box { width: 16px; height: 16px; border-radius: 50%; margin-right: 10px; border: 1px solid #333; }
+        
+        /* Map Style */
+        #map { flex-grow: 1; height: 100%; z-index: 1; }
+
+        /* Custom Popup Style */
+        .popup-content { font-size: 13px; max-width: 280px; }
+        .popup-title { font-weight: bold; font-size: 15px; margin-bottom: 5px; }
+        .popup-rec { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; }
+    </style>
+</head>
+<body>
+
+    <!-- SIDE PANEL (FILTERS) -->
+    <div id="sidebar">
+        <h2>🌱 SOC Management Map</h2>
+        <p style="font-size: 13px; color: #555;">Click any dot on the map to see measured SOC and recommendations.</p>
+        
+        <div class="filter-group">
+            <label for="stateFilter">Filter by State</label>
+            <select id="stateFilter" onchange="updateLGAOptions(); filterMap();">
+                <option value="All">All States</option>
+            </select>
+        </div>
+
+        <div class="filter-group">
+            <label for="lgaFilter">Filter by LGA</label>
+            <select id="lgaFilter" onchange="filterMap();">
+                <option value="All">All LGAs</option>
+            </select>
+        </div>
+
+        <div class="filter-group">
+            <label for="socFilter">Filter by SOC Class</label>
+            <select id="socFilter" onchange="filterMap();">
+                <option value="All">All Classes</option>
+                <option value="Severely Degraded">Severely Degraded (< 0.5%)</option>
+                <option value="Medium Carbon">Medium Carbon (0.5 - 1.2%)</option>
+                <option value="High Carbon">High Carbon (> 1.2%)</option>
+            </select>
+        </div>
+
+        <!-- LEGEND -->
+        <div class="legend">
+            <strong>SOC Level</strong><br><br>
+            <div class="legend-item"><div class="color-box" style="background:#d73027;"></div> Severely Degraded (< 0.5%)</div>
+            <div class="legend-item"><div class="color-box" style="background:#fc8d59;"></div> Medium Carbon (0.5 - 1.2%)</div>
+            <div class="legend-item"><div class="color-box" style="background:#1a9850;"></div> High Carbon (≥ 1.2%)</div>
+        </div>
+    </div>
+
+    <!-- THE MAP -->
+    <div id="map"></div>
+
+    <script>
+        // 1. Initialize Map
+        var map = L.map('map').setView([11.3, 8.1], 8);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        var allData = [];
+        var mapMarkers = [];
+
+        // 2. Color Logic
+        function getSOCStyle(soc) {
+            if (soc < 0.5) return { zone: 'Severely Degraded', color: '#d73027', rec: "<b>🔴 Immediate intervention:</b><br>- Conservation agriculture<br>- Apply compost (5-10 t/ha)<br>- Agroforestry" };
+            if (soc < 1.2) return { zone: 'Medium Carbon', color: '#fc8d59', rec: "<b>🟠 Restoration:</b><br>- Cover cropping<br>- Reduce tillage<br>- Apply biochar" };
+            return { zone: 'High Carbon', color: '#1a9850', rec: "<b>🌲 Protection:</b><br>- No land conversion<br>- Maintain practices<br>- Carbon credits" };
+        }
+
+        // 3. Load CSV Data from your GitHub Repository
+        // Replace this URL with your exact CSV link on GitHub
+        var csvURL = "https://raw.githubusercontent.com/MagDatalyt/Mag_SOC_Map_Kano-Kaduna/main/Kano_Kaduna_Environmental_Covariates_2018_2024%20(1).csv";
+
+        Papa.parse(csvURL, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+                allData = results.data;
+                initFilters();
+                filterMap();
+            }
+        });
+
+        // 4. Populate State Dropdown
+        function initFilters() {
+            var states = new Set();
+            allData.forEach(function(row) {
+                if(row.State && row.State.trim() !== "") states.add(row.State.trim());
+            });
+            var stateSelect = document.getElementById("stateFilter");
+            Array.from(states).sort().forEach(function(state) {
+                var opt = document.createElement("option");
+                opt.value = state; opt.innerHTML = state;
+                stateSelect.appendChild(opt);
+            });
+        }
+
+        // 5. Update LGA Dropdown based on State
+        function updateLGAOptions() {
+            var selectedState = document.getElementById("stateFilter").value;
+            var lgaSelect = document.getElementById("lgaFilter");
+            lgaSelect.innerHTML = '<option value="All">All LGAs</option>'; // Reset
+            
+            var lgas = new Set();
+            allData.forEach(function(row) {
+                if ((selectedState === "All" || row.State === selectedState) && row.LGA && row.LGA.trim() !== "") {
+                    lgas.add(row.LGA.trim());
+                }
+            });
+            
+            Array.from(lgas).sort().forEach(function(lga) {
+                var opt = document.createElement("option");
+                opt.value = lga; opt.innerHTML = lga;
+                lgaSelect.appendChild(opt);
+            });
+        }
+
+        // 6. Filter Map and Redraw Dots
+        function filterMap() {
+            var state = document.getElementById("stateFilter").value;
+            var lga = document.getElementById("lgaFilter").value;
+            var socClass = document.getElementById("socFilter").value;
+
+            // Clear old markers
+            mapMarkers.forEach(function(m) { map.removeLayer(m); });
+            mapMarkers = [];
+
+            allData.forEach(function(row) {
+                var lat = parseFloat(row.Lat);
+                var lon = parseFloat(row.Long);
+                var soc = parseFloat(row.SOC);
+
+                // Skip bad data
+                if (isNaN(lat) || isNaN(lon) || isNaN(soc)) return;
+
+                var socInfo = getSOCStyle(soc);
+
+                // Apply Filters
+                if (state !== "All" && row.State !== state) return;
+                if (lga !== "All" && row.LGA !== lga) return;
+                if (socClass !== "All" && socInfo.zone !== socClass) return;
+
+                // Create Popup HTML
+                var popupHTML = `
+                    <div class="popup-content">
+                        <div class="popup-title" style="color:${socInfo.color}">${socInfo.zone}</div>
+                        <b>SOC:</b> ${soc.toFixed(2)} %<br>
+                        <div class="popup-rec">${socInfo.rec}</div>
+                    </div>
+                `;
+
+                // Create Circle Marker
+                var marker = L.circleMarker([lat, lon], {
+                    radius: 5,
+                    fillColor: socInfo.color,
+                    color: "#000",
+                    weight: 0.5,
+                    opacity: 1,
+                    fillOpacity: 0.85
+                }).bindPopup(popupHTML);
+
+                marker.addTo(map);
+                mapMarkers.push(marker);
+            });
+        }
+    </script>
+</body>
+</html>
